@@ -358,8 +358,8 @@ Full detail and the complete list of what the tests check is in
 ### With Docker (recommended)
 
 ```bash
-git clone <this-repository>
-cd quant-platform
+git clone https://github.com/Paosososo/quantlab.git
+cd quantlab
 
 docker compose --profile demo up -d --build   # Postgres + migrations + demo data + API + dashboard
 ```
@@ -465,7 +465,7 @@ print(result.metrics.to_dict())
 ## Repository structure
 
 ```
-quant-platform/
+quantlab/
 ├── src/quantlab/
 │   ├── config.py                  Typed settings, one source of truth
 │   ├── timeutils.py               ★ The availability model lives here
