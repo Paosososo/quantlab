@@ -1,0 +1,176 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # A new push supersedes an in-flight run on the same ref.  Saves minutes and
+  # stops a stale red badge from a superseded commit.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  # CI never touches the network for data.  Every test uses the seeded synthetic
+  # provider or a checked-in fixture, so the suite is deterministic and needs no
+  # secrets.  A pipeline that depends on a public endpoint being up is a
+  # pipeline that goes red for reasons unrelated to the code.
+  QUANTLAB_ENV: ci
+  QUANTLAB_LOG_LEVEL: WARNING
+
+jobs:
+  lint:
+    name: Lint and format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Ruff check
+        run: ruff check --output-format=github src tests dags scripts
+      - name: Ruff format check
+        run: ruff format --check src tests dags scripts
+
+  typecheck:
+    name: Type check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[api,dashboard,dev]"
+      - name: mypy
+        run: mypy
+
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 is the declared floor and 3.12 is what the images run.  Testing
+        # both catches accidental use of newer syntax, which is easy to do and
+        # only shows up at import time on the older interpreter.
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[api,dashboard,dev]"
+      - name: Run tests
+        run: |
+          pytest -q \
+            --cov=quantlab \
+            --cov-report=xml \
+            --cov-report=term-missing:skip-covered \
+            --junitxml=junit.xml
+      - name: Upload coverage
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.xml
+          if-no-files-found: warn
+
+  leakage:
+    name: Look-ahead and leakage suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Leakage tests
+        # Run separately as well as inside the full suite, so that a failure
+        # here is unmistakable in the checks list.  These are the tests that
+        # protect the project's central claim; if they break, nothing else the
+        # repository reports can be trusted.
+        run: pytest -m leakage -q --no-header
+
+  migrations:
+    name: Migrations match the ORM
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: quantlab
+          POSTGRES_PASSWORD: quantlab
+          POSTGRES_DB: quantlab
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U quantlab"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      QUANTLAB_DATABASE_URL: postgresql+psycopg://quantlab:quantlab@localhost:5432/quantlab
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Apply migrations
+        run: alembic upgrade head
+      - name: Fail if the ORM has drifted from the migrations
+        # Alembic compares the model to the migrated database without writing
+        # a temporary revision file. Any pending autogenerate operations fail.
+        run: alembic check
+      - name: Migrations roll back cleanly
+        run: alembic downgrade base
+
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the application image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: false
+          load: true
+          tags: quantlab:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: The CLI runs inside the image
+        run: docker run --rm quantlab:ci quantlab --version
+      - name: Validate the compose file
+        run: docker compose config --quiet

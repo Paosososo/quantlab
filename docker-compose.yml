@@ -1,0 +1,211 @@
+# ---------------------------------------------------------------------------
+# quantlab local stack.
+#
+#   docker compose up                      -> PostgreSQL, migrations, API, dashboard
+#   docker compose --profile demo up        -> the above, plus a seeded demo dataset
+#   docker compose --profile airflow up     -> the above, plus Airflow
+#
+# Airflow sits behind a profile on purpose.  It is three more containers and
+# roughly 2GB of image, and a reviewer who wants to read the code and click
+# through the dashboard should not have to wait for a scheduler to boot.  The
+# DAGs are still there, and one flag away.
+#
+# Credentials
+# -----------
+# Every secret below is a ``${VAR:-default}`` interpolation, not a literal.
+# Compose reads ``.env`` from this directory automatically, so `cp .env.example
+# .env` and editing it changes the whole stack.  The defaults are deliberately
+# obvious throwaways for a local demo -- their job is to make `docker compose up`
+# work with no setup, not to be secure -- and every published port is bound to
+# 127.0.0.1 so that a laptop on an untrusted network is not serving a
+# trivially-authenticated PostgreSQL to the world.  Anything beyond a local demo
+# must set real values in ``.env``.
+# ---------------------------------------------------------------------------
+
+x-quantlab-env: &quantlab-env
+  QUANTLAB_ENV: docker
+  QUANTLAB_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-quantlab}:${POSTGRES_PASSWORD:-quantlab}@postgres:5432/${POSTGRES_DB:-quantlab}
+  QUANTLAB_DATA_DIR: /app/data
+  QUANTLAB_LOG_JSON: "true"
+  QUANTLAB_LOG_LEVEL: INFO
+  # No PYTHONPATH.  The image installs quantlab into /opt/venv; pointing
+  # PYTHONPATH at a copied source tree made that copy shadow the installed
+  # distribution.  See docker/Dockerfile.
+
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: docker/Dockerfile.airflow
+  environment: &airflow-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-quantlab}:${POSTGRES_PASSWORD:-quantlab}@postgres:5432/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "false"
+    AIRFLOW__LOGGING__LOGGING_LEVEL: INFO
+    # Airflow parses every DAG file on a short interval; 60s keeps the scheduler
+    # responsive without pegging a CPU on a laptop.
+    AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: "60"
+    QUANTLAB_ENV: docker
+    QUANTLAB_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-quantlab}:${POSTGRES_PASSWORD:-quantlab}@postgres:5432/${POSTGRES_DB:-quantlab}
+    QUANTLAB_DATA_DIR: /opt/airflow/data
+    QUANTLAB_LOG_JSON: "true"
+  volumes:
+    - ./dags:/opt/airflow/dags:ro
+    - airflow-logs:/opt/airflow/logs
+    - quantlab-data:/opt/airflow/data
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: quantlab-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-quantlab}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-quantlab}
+      POSTGRES_DB: ${POSTGRES_DB:-quantlab}
+    ports:
+      # Bound to the loopback interface.  ``"5432:5432"`` publishes on every
+      # interface, which put a database holding a throwaway password on whatever
+      # network the laptop was attached to.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # Other services wait on this rather than sleeping, so `up` is
+      # deterministic instead of racing the database.
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER:-quantlab}" -d "$${POSTGRES_DB:-quantlab}"
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: quantlab-migrate
+    environment: *quantlab-env
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  seed:
+    # Demo data from the synthetic generator: no network, no API key,
+    # deterministic.  Clearly labelled as synthetic everywhere it appears.
+    profiles: ["demo"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: quantlab-seed
+    environment: *quantlab-env
+    volumes:
+      - quantlab-data:/app/data
+    command: ["python", "-m", "quantlab.demo_seed"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: quantlab-api
+    environment: *quantlab-env
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    volumes:
+      - quantlab-data:/app/data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: quantlab-dashboard
+    environment:
+      <<: *quantlab-env
+      QUANTLAB_API_URL: http://api:8000
+    ports:
+      - "127.0.0.1:${DASHBOARD_PORT:-8501}:8501"
+    # ``python -m quantlab.dashboard`` rather than ``streamlit run src/...``:
+    # the image no longer carries a source tree, so the launcher resolves the
+    # installed module's path instead.  See quantlab/dashboard/__main__.py.
+    command:
+      - python
+      - -m
+      - quantlab.dashboard
+      - --server.port=8501
+      - --server.address=0.0.0.0
+      - --server.headless=true
+      - --browser.gatherUsageStats=false
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+
+  airflow-init:
+    <<: *airflow-common
+    profiles: ["airflow"]
+    environment:
+      <<: *airflow-env
+      AIRFLOW_ADMIN_USER: ${AIRFLOW_ADMIN_USER:-airflow}
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-airflow}
+      AIRFLOW_ADMIN_EMAIL: ${AIRFLOW_ADMIN_EMAIL:-airflow@example.com}
+    container_name: quantlab-airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        airflow users create \
+          --username "$${AIRFLOW_ADMIN_USER:-airflow}" \
+          --password "$${AIRFLOW_ADMIN_PASSWORD:-airflow}" \
+          --firstname Local --lastname Dev \
+          --role Admin --email "$${AIRFLOW_ADMIN_EMAIL:-airflow@example.com}" || true
+    restart: "no"
+
+  airflow-scheduler:
+    <<: *airflow-common
+    profiles: ["airflow"]
+    container_name: quantlab-airflow-scheduler
+    command: scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  airflow-webserver:
+    <<: *airflow-common
+    profiles: ["airflow"]
+    container_name: quantlab-airflow-webserver
+    command: webserver
+    ports:
+      - "127.0.0.1:${AIRFLOW_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  quantlab-data:
+  airflow-logs:

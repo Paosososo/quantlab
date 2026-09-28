@@ -1,0 +1,36 @@
+# ---------------------------------------------------------------------------
+# Airflow image with quantlab installed.
+#
+# Extends the official image rather than installing Airflow into ours.  Airflow
+# pins a large and specific dependency set, and its published image has already
+# resolved it; re-solving that from scratch is a recurring maintenance cost for
+# no benefit.
+# ---------------------------------------------------------------------------
+FROM apache/airflow:2.10.5-python3.12
+
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential libpq-dev git \
+    && rm -rf /var/lib/apt/lists/*
+
+USER airflow
+
+COPY --chown=airflow:root pyproject.toml README.md /opt/quantlab/
+COPY --chown=airflow:root src /opt/quantlab/src
+
+# --no-deps then an explicit list: a bare `pip install .` lets our requirements
+# re-resolve Airflow's carefully pinned tree and can silently break the
+# scheduler.  Installing the package without dependencies and adding only what
+# is missing keeps Airflow's constraints intact.
+RUN pip install --no-cache-dir --no-deps /opt/quantlab \
+    && pip install --no-cache-dir \
+        "scikit-learn>=1.4" \
+        "statsmodels>=0.14" \
+        "structlog>=24.1" \
+        "tenacity>=8.2" \
+    && rm -rf /opt/quantlab/src
+
+# No ``PYTHONPATH=/opt/quantlab/src``.  It used to be here, and it shadowed the
+# distribution pip had just installed, so the scheduler executed the loose
+# source tree rather than the installed package.  The build inputs are deleted
+# above for the same reason: one importable copy, and it is the installed one.
