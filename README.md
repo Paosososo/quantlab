@@ -1,5 +1,7 @@
 # quantlab
 
+[![CI](https://github.com/Paosososo/quantlab/actions/workflows/ci.yml/badge.svg)](https://github.com/Paosososo/quantlab/actions/workflows/ci.yml)
+
 A financial data research and quantitative backtesting platform, built to
 answer one question honestly:
 
@@ -501,8 +503,9 @@ reading order.
 Latest local run: 558 passed, 1 skipped (Python 3.12, 2026-09-28).
 Coverage was not measured in that run.
 Ruff lint and format checks and mypy pass locally on Python 3.12.
-The Python 3.10 and PostgreSQL CI jobs have not been run on GitHub for this
-working tree; see `PROJECT_STATUS.md`.
+GitHub Actions also checks Python 3.10 and 3.12, PostgreSQL migrations,
+and the Docker image. See the [live CI results](https://github.com/Paosososo/quantlab/actions/workflows/ci.yml)
+for the latest outcome.
 ```
 
 | Suite | What it covers |

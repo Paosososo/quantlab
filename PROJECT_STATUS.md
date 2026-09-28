@@ -13,8 +13,12 @@ Implementation and verification notes for readers of this repository.
 | Database | 19 ORM tables and 2 Alembic migrations; live PostgreSQL check not run locally |
 
 Mypy targets Python 3.12, matching its CI job. The test matrix also includes
-Python 3.10, the declared runtime floor, but that job has not been observed on
-GitHub for the current working tree.
+Python 3.10, the declared runtime floor. The first public CI run passed both
+Python test jobs, lint, type checking, PostgreSQL migrations, and the Docker
+image build. Its separate leakage job failed during collection because it did
+not install FastAPI; the workflow now installs the API extra in that job.
+See the [live CI results](https://github.com/Paosososo/quantlab/actions/workflows/ci.yml)
+for the follow-up result.
 
 ---
 
@@ -111,7 +115,7 @@ GitHub for the current working tree.
 | **Classification models** | Interface, logistic, RF and GB classifiers, AUC/log-loss/Brier | The default ladder and the research study are regression-only |
 | **Airflow** | DAGs, images, compose profile, structural tests | Never run against a live scheduler in this session; the DagBag test skips without Airflow installed |
 | **Dashboard** | Market data, backtests, models, risk, monthly returns | No feature explorer, no live optimiser page |
-| **Docker** | Images and compose written and `docker compose config` validated | The build was never executed here; no Docker daemon in the build environment |
+| **Docker** | Application image builds in GitHub CI; compose configuration validated | Full multi-service stack not run end to end; no local Docker daemon |
 
 ---
 
@@ -124,8 +128,8 @@ GitHub for the current working tree.
    test trading returns or costs. Stooq returned a browser challenge and Yahoo
    a rate-limit response, so the project's ETF OHLCV ingestion and full
    `make research` workflow remain unverified on market data.
-2. **Build and run the Docker stack once.** The configuration is written but
-   unexecuted. Expect small fixes.
+2. **Run the full Docker stack once.** The application image builds in CI, but
+   the multi-service compose stack has not run end to end.
 3. **Start the Airflow scheduler once** and confirm the DagBag loads and one DAG
    runs end to end.
 
@@ -146,7 +150,7 @@ GitHub for the current working tree.
 
 | Issue | Severity | Detail |
 |---|---|---|
-| Docker images never built | Medium | Written and validated with `docker compose config`, but not executed |
+| Docker stack not run end to end | Medium | Application image builds in CI; full compose workflow remains unverified |
 | Airflow never run live | Medium | Structural tests pass; the scheduler was never started |
 | Cash earns no interest | Low | Penalises strategies that sit in cash; documented in `docs/backtesting.md` |
 | No borrow costs | Low | Flatters short strategies |

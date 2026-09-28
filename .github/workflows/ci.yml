@@ -108,7 +108,9 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          # Pytest collects the whole tree before applying the leakage marker;
+          # API integration tests need FastAPI at collection time.
+          pip install -e ".[api,dev]"
       - name: Leakage tests
         # Run separately as well as inside the full suite, so that a failure
         # here is unmistakable in the checks list.  These are the tests that
